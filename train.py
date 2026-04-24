@@ -199,7 +199,12 @@ def main():
             if len(split) > 0:
                 sample = split[0]
                 logger.info(f"  turns: {len(sample['messages'])}")
-                logger.info(f"  weight: {sample['weight']:.3f}")
+                tw = sample["turn_weights"]
+                asst_w = [w for w in tw if w > 0]
+                logger.info(f"  turn_weights: {len(tw)} turns, "
+                            f"{len(asst_w)} assistant, "
+                            f"asst mean={sum(asst_w)/len(asst_w):.3f}" if asst_w
+                            else f"  turn_weights: {len(tw)} turns, no assistant")
                 content = sample["messages"][0]["content"][:120]
                 logger.info(f"  first turn: {content}...")
 

@@ -130,22 +130,22 @@ def extract_features(text: str) -> np.ndarray:
 # Turn pair extraction (format-agnostic)
 # ----------------------------------------------------------------
 
-def _pairs_from_turns(turns: list[dict]) -> list[tuple[str, str]]:
-    """Extract adjacent (user, assistant) pairs from a turn list."""
+def _pairs_from_turns(turns: list[dict]) -> list[tuple[str, str, int]]:
+    """Extract adjacent (user, assistant) pairs with the assistant's index in the turn list."""
     pairs = []
     for i in range(len(turns) - 1):
         if turns[i]["role"] == "user" and turns[i + 1]["role"] == "assistant":
-            pairs.append((turns[i]["content"], turns[i + 1]["content"]))
+            pairs.append((turns[i]["content"], turns[i + 1]["content"], i + 1))
     return pairs
 
 
-def _pairs_from_dpo(prompt_json: str, chosen_json: str) -> list[tuple[str, str]]:
+def _pairs_from_dpo(prompt_json: str, chosen_json: str) -> list[tuple[str, str, int]]:
     """Extract pairs from DPO prompt+chosen format."""
     turns = json.loads(prompt_json) + json.loads(chosen_json)
     return _pairs_from_turns(turns)
 
 
-def _pairs_from_sft(turns_json: str) -> list[tuple[str, str]]:
+def _pairs_from_sft(turns_json: str) -> list[tuple[str, str, int]]:
     """Extract pairs from SFT chain turns format."""
     turns = json.loads(turns_json)
     return _pairs_from_turns(turns)
@@ -160,7 +160,7 @@ def load_data(data_dir: str) -> tuple[pa.Table, str]:
 
     Returns (table, format) where format is "sft" or "dpo".
     """
-    files = sorted(glob.glob(os.path.join(data_dir, "*.parquet")))
+    files = sorted(glob.glob(os.path.join(data_dir, "**", "*.parquet"), recursive=True))
     if not files:
         raise FileNotFoundError(f"No parquet files in {data_dir}")
     tables = [pq.read_table(f) for f in files]
@@ -184,33 +184,46 @@ def load_data(data_dir: str) -> tuple[pa.Table, str]:
 # Scoring
 # ----------------------------------------------------------------
 
-def compute_scores(table: pa.Table, fmt: str) -> np.ndarray:
-    """Compute per-row attunement scores."""
+def compute_scores(table: pa.Table, fmt: str) -> tuple[np.ndarray, list[list[tuple[int, float]]]]:
+    """Compute attunement scores at both chain and per-turn level.
 
+    Returns:
+        chain_scores: (n_rows,) array -- mean attunement per chain.
+        per_turn_scores: list of list of (assistant_turn_index, cosine_score)
+            per row, one entry per (user, assistant) pair.
+    """
     all_user_feats = []
     all_asst_feats = []
     pair_counts = []
+    pair_asst_indices: list[list[int]] = []
 
     if fmt == "sft":
         turns_col = table.column("turns").to_pylist()
         for turns_json in turns_col:
             pairs = _pairs_from_sft(turns_json)
             pair_counts.append(len(pairs))
-            for u, a in pairs:
+            indices = []
+            for u, a, asst_idx in pairs:
                 all_user_feats.append(extract_features(u))
                 all_asst_feats.append(extract_features(a))
+                indices.append(asst_idx)
+            pair_asst_indices.append(indices)
     else:
         prompts = table.column("prompt").to_pylist()
         chosens = table.column("chosen").to_pylist()
         for prompt_json, chosen_json in zip(prompts, chosens):
             pairs = _pairs_from_dpo(prompt_json, chosen_json)
             pair_counts.append(len(pairs))
-            for u, a in pairs:
+            indices = []
+            for u, a, asst_idx in pairs:
                 all_user_feats.append(extract_features(u))
                 all_asst_feats.append(extract_features(a))
+                indices.append(asst_idx)
+            pair_asst_indices.append(indices)
 
+    n = len(table)
     if not all_user_feats:
-        return np.zeros(len(table), dtype=np.float32)
+        return np.zeros(n, dtype=np.float32), [[] for _ in range(n)]
 
     user_mat = np.stack(all_user_feats)
     asst_mat = np.stack(all_asst_feats)
@@ -232,15 +245,27 @@ def compute_scores(table: pa.Table, fmt: str) -> np.ndarray:
     denom[denom < 1e-8] = 1.0
     cosines = dot / denom
 
-    # average across pairs per conversation
-    scores = np.zeros(len(table), dtype=np.float32)
+    chain_scores = np.zeros(n, dtype=np.float32)
+    per_turn_scores: list[list[tuple[int, float]]] = []
     idx = 0
     for i, count in enumerate(pair_counts):
+        turn_scores = []
         if count > 0:
-            scores[i] = cosines[idx:idx + count].mean()
+            chain_scores[i] = cosines[idx:idx + count].mean()
+            for j in range(count):
+                turn_scores.append((pair_asst_indices[i][j], float(cosines[idx + j])))
         idx += count
+        per_turn_scores.append(turn_scores)
 
-    return scores
+    return chain_scores, per_turn_scores
+
+
+def _embed_turn_scores(turns_json: str, turn_scores: list[tuple[int, float]]) -> str:
+    """Write per-turn attunement scores into assistant turn dicts."""
+    turns = json.loads(turns_json)
+    for asst_idx, score in turn_scores:
+        turns[asst_idx]["attunement_score"] = round(score, 6)
+    return json.dumps(turns, ensure_ascii=False)
 
 
 def main():
@@ -253,23 +278,31 @@ def main():
     table, fmt = load_data(args.data_dir)
     print(f"Loaded {len(table)} rows (format: {fmt})")
 
-    scores = compute_scores(table, fmt)
+    chain_scores, per_turn_scores = compute_scores(table, fmt)
 
-    print(f"\nAttunement score stats:")
-    print(f"  mean:   {scores.mean():.4f}")
-    print(f"  std:    {scores.std():.4f}")
-    print(f"  min:    {scores.min():.4f}")
-    print(f"  max:    {scores.max():.4f}")
-    print(f"  median: {np.median(scores):.4f}")
+    print(f"\nAttunement score stats (chain-level):")
+    print(f"  mean:   {chain_scores.mean():.4f}")
+    print(f"  std:    {chain_scores.std():.4f}")
+    print(f"  min:    {chain_scores.min():.4f}")
+    print(f"  max:    {chain_scores.max():.4f}")
+    print(f"  median: {np.median(chain_scores):.4f}")
 
-    q = np.percentile(scores, [10, 25, 75, 90])
+    q = np.percentile(chain_scores, [10, 25, 75, 90])
     print(f"  p10:    {q[0]:.4f}")
     print(f"  p25:    {q[1]:.4f}")
     print(f"  p75:    {q[2]:.4f}")
     print(f"  p90:    {q[3]:.4f}")
 
+    # Embed per-turn attunement into turn dicts (SFT format only)
+    if fmt == "sft":
+        turns_col = table.column("turns").to_pylist()
+        updated = [_embed_turn_scores(tj, ts)
+                   for tj, ts in zip(turns_col, per_turn_scores)]
+        col_idx = table.schema.get_field_index("turns")
+        table = table.set_column(col_idx, "turns", pa.array(updated, type=pa.string()))
+
     table = table.append_column("attunement_score",
-                                pa.array(scores, type=pa.float32()))
+                                pa.array(chain_scores, type=pa.float32()))
 
     os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
     pq.write_table(table, args.output_path)

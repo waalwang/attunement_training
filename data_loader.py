@@ -8,8 +8,8 @@ for weighted SFT.
 SFTTrainer expects each row to have:
   - messages: list of {"role": ..., "content": ...}
 
-We also compute a per-example `weight` from the attunement score and
-per-turn comment scores, used by WeightedSFTTrainer to scale the loss.
+We also compute per-turn `turn_weights` from per-turn attunement scores
+and upvote scores, used by WeightedSFTTrainer to scale token-level loss.
 """
 
 from __future__ import annotations
@@ -25,37 +25,26 @@ from datasets import Dataset, DatasetDict
 logger = logging.getLogger(__name__)
 
 
-def _compute_weight(
-    turns: list[dict],
-    attunement_score: float | None,
-    beta: float,
-) -> float:
-    """Compute per-example SFT loss weight.
+def _compute_turn_weights(turns: list[dict], beta: float) -> list[float]:
+    """Compute per-turn loss weights.
 
-    weight = attunement_component + beta * score_component
+    For each assistant turn:
+        weight = attunement_component + beta * score_component
+    For user/system turns: weight = 0.0 (masked out by labels=-100 anyway).
 
-    attunement_component: max(0, attunement_score) -- clipped negative = 0
-    score_component: mean(log(1 + turn_score)) across assistant turns
-                     log compresses heavy-tailed upvotes so viral punchlines
-                     don't dominate
-
-    If attunement_score is None (not yet scored), falls back to score_component
-    only with a baseline attunement of 0.5.
+    attunement_component: max(0, turn's attunement_score), or 0.5 if absent
+    score_component: log(1 + upvote_score)
     """
-    # Score component: log-compressed mean of assistant turn scores
-    asst_scores = [t.get("score", 0) for t in turns if t["role"] == "assistant"]
-    if asst_scores:
-        score_component = np.mean([np.log1p(max(0, s)) for s in asst_scores])
-    else:
-        score_component = 0.0
-
-    # Attunement component
-    if attunement_score is not None:
-        attunement_component = max(0.0, attunement_score)
-    else:
-        attunement_component = 0.5
-
-    return attunement_component + beta * score_component
+    weights = []
+    for t in turns:
+        if t["role"] != "assistant":
+            weights.append(0.0)
+            continue
+        score_component = np.log1p(max(0, t.get("score", 0)))
+        att = t.get("attunement_score")
+        attunement_component = max(0.0, att) if att is not None else 0.5
+        weights.append(attunement_component + beta * score_component)
+    return weights
 
 
 def load_sft_dataset(
@@ -78,7 +67,7 @@ def load_sft_dataset(
                          vs attunement. Higher = more upvote influence.
     Returns:
         DatasetDict with "train" and "test" splits.
-        Each row has: messages (list[dict]), weight (float).
+        Each row has: messages (list[dict]), turn_weights (list[float]).
     """
     if os.path.isfile(data_dir):
         files = [data_dir]
@@ -97,20 +86,28 @@ def load_sft_dataset(
     if not rows:
         raise ValueError(f"No rows loaded from {data_dir}")
 
-    # Normalize weights to mean=1 so effective LR is unchanged
-    weights = np.array([r["weight"] for r in rows])
-    if weights.std() > 1e-8:
-        weights = weights / weights.mean()
+    # Normalize non-zero turn weights to mean=1 so effective LR is unchanged
+    all_nonzero = [w for r in rows for w in r["turn_weights"] if w > 0]
+    if all_nonzero:
+        arr = np.array(all_nonzero)
+        if arr.std() > 1e-8:
+            scale = arr.mean()
+            for r in rows:
+                r["turn_weights"] = [w / scale if w > 0 else 0.0
+                                     for w in r["turn_weights"]]
+            arr = arr / scale
+        else:
+            for r in rows:
+                r["turn_weights"] = [1.0 if w > 0 else 0.0
+                                     for w in r["turn_weights"]]
+            arr = np.ones_like(arr)
+        logger.info(
+            f"Loaded {len(rows)} chains | "
+            f"turn weight stats (assistant only): mean={arr.mean():.3f} "
+            f"std={arr.std():.3f} min={arr.min():.3f} max={arr.max():.3f}"
+        )
     else:
-        weights = np.ones_like(weights)
-    for r, w in zip(rows, weights):
-        r["weight"] = float(w)
-
-    logger.info(
-        f"Loaded {len(rows)} chains | "
-        f"weight stats: mean={weights.mean():.3f} std={weights.std():.3f} "
-        f"min={weights.min():.3f} max={weights.max():.3f}"
-    )
+        logger.info(f"Loaded {len(rows)} chains | no assistant turns found")
 
     ds = Dataset.from_list(rows)
     split = ds.train_test_split(test_size=test_split, seed=seed)
@@ -129,7 +126,6 @@ def _load_shard(
     table = pq.read_table(path)
     data = table.to_pydict()
     n = table.num_rows
-    has_attunement = "attunement_score" in data
 
     rows = []
     for i in range(n):
@@ -142,13 +138,11 @@ def _load_shard(
 
         turns = json.loads(data["turns"][i])
         messages = [{"role": t["role"], "content": t["content"]} for t in turns]
-
-        attunement = data["attunement_score"][i] if has_attunement else None
-        weight = _compute_weight(turns, attunement, weight_beta)
+        turn_weights = _compute_turn_weights(turns, weight_beta)
 
         rows.append({
             "messages": messages,
-            "weight": weight,
+            "turn_weights": turn_weights,
         })
 
     logger.info(f"  {os.path.basename(path)}: {n} total, {len(rows)} kept")
