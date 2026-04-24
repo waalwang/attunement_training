@@ -67,11 +67,11 @@ class WeightedSFTTrainer(SFTTrainer):
             return acc
         return None
 
-    def log(self, logs):
+    def log(self, logs, *args, **kwargs):
         acc = self._flush_accuracy()
         if acc is not None:
             logs["accuracy"] = acc
-        super().log(logs)
+        super().log(logs, *args, **kwargs)
 
     def evaluate(self, *args, **kwargs):
         self._acc_correct = 0
