@@ -111,6 +111,9 @@ def build_training_args(cfg: dict) -> SFTConfig:
         eval_steps=t["eval_steps"],
         eval_strategy=t.get("eval_strategy", "steps"),
         save_total_limit=t["save_total_limit"],
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_accuracy",
+        greater_is_better=True,
         report_to=t.get("report_to", "none"),
         run_name=t.get("run_name"),
         max_length=t["max_length"],
@@ -217,10 +220,7 @@ def main():
     logger.info("Starting weighted SFT training...")
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
-    final_dir = os.path.join(cfg["training"]["output_dir"], "final")
-    trainer.save_model(final_dir)
-    tokenizer.save_pretrained(final_dir)
-    logger.info(f"Model saved to {final_dir}")
+    logger.info("Training complete. Best checkpoint kept in %s", cfg["training"]["output_dir"])
 
 
 if __name__ == "__main__":
