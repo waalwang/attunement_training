@@ -25,6 +25,7 @@ import argparse
 import logging
 import os
 
+import numpy as np
 import torch
 import yaml
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
@@ -89,6 +90,18 @@ def build_lora_config(cfg: dict) -> LoraConfig:
         task_type=TaskType.CAUSAL_LM,
         bias="none",
     )
+
+
+def preprocess_logits_for_metrics(logits, labels):
+    return logits.argmax(dim=-1)
+
+
+def compute_metrics(eval_pred):
+    preds, labels = eval_pred
+    mask = labels != -100
+    correct = ((preds[:, :-1] == labels[:, 1:]) & mask[:, 1:]).sum()
+    total = mask[:, 1:].sum()
+    return {"accuracy": (correct / total).item() if total > 0 else 0.0}
 
 
 def build_training_args(cfg: dict) -> SFTConfig:
@@ -219,6 +232,8 @@ def main():
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
         processing_class=tokenizer,
+        compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         callbacks=[SyncStateStepsCallback()],
     )
 
