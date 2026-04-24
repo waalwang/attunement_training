@@ -83,7 +83,7 @@ def load_sft_dataset(
     if os.path.isfile(data_dir):
         files = [data_dir]
     else:
-        files = sorted(glob.glob(os.path.join(data_dir, "*.parquet")))
+        files = sorted(glob.glob(os.path.join(data_dir, "**", "*.parquet"), recursive=True))
     if not files:
         raise FileNotFoundError(f"No parquet files at {data_dir}")
 
