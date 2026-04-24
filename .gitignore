@@ -1,0 +1,8 @@
+data/
+outputs/
+merged/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+wandb/
