@@ -113,7 +113,7 @@ def build_training_args(cfg: dict) -> SFTConfig:
         save_total_limit=t["save_total_limit"],
         report_to=t.get("report_to", "none"),
         run_name=t.get("run_name"),
-        max_seq_length=t["max_length"],
+        max_length=t["max_length"],
         dataset_num_proc=t.get("dataset_num_proc"),
         seed=cfg["data"].get("seed", 42),
         remove_unused_columns=False,
@@ -159,6 +159,8 @@ def load_model_and_tokenizer(cfg: dict):
 
 
 def main():
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     parser = argparse.ArgumentParser(description="Weighted SFT training")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--profile", default="cloud_full",

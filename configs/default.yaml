@@ -17,7 +17,6 @@ model_presets:
 
 data:
   sft_chain_dir: "./data/sft_chains"
-  attunement_path: null    # path to attunement-scored parquet (optional)
   test_split: 0.05
   seed: 42
   min_chain_depth: 3
@@ -65,8 +64,8 @@ profiles:
 
   cloud_full:
     # Full FT 7B, RTX PRO 6000 WS 96GB
-    per_device_train_batch_size: 2
-    gradient_accumulation_steps: 8
+    per_device_train_batch_size: 4
+    gradient_accumulation_steps: 4
     bf16: true
     fp16: false
     full_finetune: true
