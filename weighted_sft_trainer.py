@@ -125,15 +125,16 @@ class WeightedSFTTrainer(SFTTrainer):
         limit = self.args.save_total_limit
         if limit and limit > 0:
             run_dir = self._get_output_dir(trial=trial)
-            keep = max(1, limit - 1)
+            keep = limit - 1
             best = self.state.best_model_checkpoint
             checkpoints = sort_checkpoints(run_dir, use_mtime=True)
+            protect_best = best if keep > 0 else None
             if len(checkpoints) > keep:
                 to_delete = []
                 for cp in checkpoints:
                     if len(checkpoints) - len(to_delete) <= keep:
                         break
-                    if cp != best:
+                    if cp != protect_best:
                         to_delete.append(cp)
                 for cp in to_delete:
                     logger.info("Pre-save rotation: removing %s", cp)
