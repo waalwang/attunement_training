@@ -8,8 +8,14 @@ cross-entropy loss contribution.
 
 from __future__ import annotations
 
+import logging
+import os
+
 import torch
+from transformers.trainer_utils import rotate_checkpoints
 from trl import SFTTrainer
+
+logger = logging.getLogger(__name__)
 
 
 class WeightedSFTTrainer(SFTTrainer):
@@ -76,8 +82,22 @@ class WeightedSFTTrainer(SFTTrainer):
     def evaluate(self, *args, **kwargs):
         self._acc_correct = 0
         self._acc_total = 0
-        output = super().evaluate(*args, **kwargs)
-        acc = self._flush_accuracy()
-        if acc is not None:
-            output["eval_accuracy"] = acc
-        return output
+        return super().evaluate(*args, **kwargs)
+
+    def _save_checkpoint(self, model, trial=None):
+        if self.args.save_total_limit and self.args.save_total_limit > 0:
+            run_dir = self._get_output_dir(trial=trial)
+            rotate_checkpoints(
+                output_dir=run_dir,
+                save_total_limit=max(1, self.args.save_total_limit - 1),
+                best_model_checkpoint=self.state.best_model_checkpoint,
+                use_mtime=True,
+            )
+            logger.info("Pre-save rotation done, freeing disk before writing new checkpoint")
+
+        saved_limit = self.args.save_total_limit
+        self.args.save_total_limit = None
+        try:
+            super()._save_checkpoint(model, trial)
+        finally:
+            self.args.save_total_limit = saved_limit
