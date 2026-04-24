@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 
 import torch
-from transformers.trainer_utils import rotate_checkpoints
+from transformers.trainer_utils import sort_checkpoints
 from trl import SFTTrainer
 
 logger = logging.getLogger(__name__)
@@ -85,15 +86,22 @@ class WeightedSFTTrainer(SFTTrainer):
         return super().evaluate(*args, **kwargs)
 
     def _save_checkpoint(self, model, trial=None):
-        if self.args.save_total_limit and self.args.save_total_limit > 0:
+        limit = self.args.save_total_limit
+        if limit and limit > 0:
             run_dir = self._get_output_dir(trial=trial)
-            rotate_checkpoints(
-                output_dir=run_dir,
-                save_total_limit=max(1, self.args.save_total_limit - 1),
-                best_model_checkpoint=self.state.best_model_checkpoint,
-                use_mtime=True,
-            )
-            logger.info("Pre-save rotation done, freeing disk before writing new checkpoint")
+            keep = max(1, limit - 1)
+            best = self.state.best_model_checkpoint
+            checkpoints = sort_checkpoints(run_dir, use_mtime=True)
+            if len(checkpoints) > keep:
+                to_delete = []
+                for cp in checkpoints:
+                    if len(checkpoints) - len(to_delete) <= keep:
+                        break
+                    if cp != best:
+                        to_delete.append(cp)
+                for cp in to_delete:
+                    logger.info("Pre-save rotation: removing %s", cp)
+                    shutil.rmtree(cp, ignore_errors=True)
 
         saved_limit = self.args.save_total_limit
         self.args.save_total_limit = None
