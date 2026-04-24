@@ -1,15 +1,50 @@
 """
 weighted_sft_trainer.py
 
-Extends TRL's SFTTrainer to support per-example loss weights.
-Each training example carries a `weight` field that scales its
-cross-entropy loss contribution.
+Extends TRL's SFTTrainer to support per-turn loss weights.
+Each training example carries a `turn_weights` field -- a list of floats,
+one per conversation turn. Assistant turn weights scale token-level loss;
+user/system turns have weight 0 (already masked by labels=-100).
+
+Falls back to plain unweighted SFT when turn_weights is absent.
 """
 
 from __future__ import annotations
 
 import torch
 from trl import SFTTrainer
+
+
+def _build_token_weights(labels: torch.Tensor, turn_weights: list[list[float]]) -> torch.Tensor:
+    """Map per-turn weights onto token positions using label mask transitions.
+
+    labels has -100 for masked tokens (user/system turns, padding) and real
+    token ids for assistant turns. Each contiguous run of non-(-100) tokens
+    is one assistant turn region, assigned the next assistant weight from
+    turn_weights.
+    """
+    batch_size, seq_len = labels.shape
+    token_w = torch.ones_like(labels, dtype=torch.float32)
+
+    for b in range(batch_size):
+        row_labels = labels[b]
+        asst_weights = [w for w in turn_weights[b] if w > 0]
+        region_idx = 0
+        in_region = False
+        cur_weight = 1.0
+
+        for t in range(seq_len):
+            if row_labels[t] != -100:
+                if not in_region:
+                    in_region = True
+                    cur_weight = asst_weights[region_idx] if region_idx < len(asst_weights) else 1.0
+                    region_idx += 1
+                token_w[b, t] = cur_weight
+            else:
+                in_region = False
+                token_w[b, t] = 0.0
+
+    return token_w
 
 
 class WeightedSFTTrainer(SFTTrainer):
@@ -20,7 +55,7 @@ class WeightedSFTTrainer(SFTTrainer):
         self._acc_total = 0
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        weights = inputs.pop("weight", None)
+        turn_weights = inputs.pop("turn_weights", None)
 
         outputs = model(
             input_ids=inputs["input_ids"],
@@ -34,9 +69,12 @@ class WeightedSFTTrainer(SFTTrainer):
         shift_labels = labels[..., 1:].contiguous()
         mask = shift_labels != -100
 
-        if weights is None:
+        if turn_weights is None:
             loss = outputs.loss
         else:
+            token_w = _build_token_weights(shift_labels, turn_weights)
+            token_w = token_w.to(shift_logits.device, dtype=shift_logits.dtype)
+
             loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
             per_token_loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
@@ -44,10 +82,8 @@ class WeightedSFTTrainer(SFTTrainer):
             )
             per_token_loss = per_token_loss.view(shift_labels.size())
 
-            per_example_loss = (per_token_loss * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-
-            weights = weights.to(per_example_loss.device, dtype=per_example_loss.dtype)
-            loss = (weights * per_example_loss).sum() / weights.sum()
+            weighted_loss = per_token_loss * token_w
+            loss = weighted_loss.sum() / token_w.sum().clamp(min=1)
 
         with torch.no_grad():
             preds = shift_logits.argmax(dim=-1)
