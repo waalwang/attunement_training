@@ -25,25 +25,48 @@ from datasets import Dataset, DatasetDict
 logger = logging.getLogger(__name__)
 
 
-def _compute_turn_weights(turns: list[dict], beta: float) -> list[float]:
+def _compute_turn_weights(
+    turns: list[dict],
+    beta: float,
+    weight_mode: str = "gate_amplify",
+) -> list[float]:
     """Compute per-turn loss weights.
 
-    For each assistant turn:
-        weight = attunement_component + beta * score_component
-    For user/system turns: weight = 0.0 (masked out by labels=-100 anyway).
+    weight_mode="gate_amplify" (default / option A):
+        Attunement gates: turns with attunement <= 0 get weight=0.
+        Surviving turns: weight = attunement * (1 + beta * log1p(upvote))
+        Upvote amplifies good turns but cannot rescue bad ones.
 
-    attunement_component: max(0, turn's attunement_score), or 0.5 if absent
-    score_component: log(1 + upvote_score)
+    weight_mode="attunement_only" (option B):
+        weight = max(0, attunement_score), upvote ignored.
+        Cleanest gradient signal; upvote only used for pre-filtering.
+
+    weight_mode="additive" (original):
+        weight = max(0, attunement) + beta * log1p(upvote)
+        No gating; upvote creates a floor even for negative-attunement turns.
+
+    For user/system turns: weight = 0.0 (masked out by labels=-100 anyway).
+    attunement_score absent: treated as 0.5 (neutral).
     """
     weights = []
     for t in turns:
         if t["role"] != "assistant":
             weights.append(0.0)
             continue
-        score_component = np.log1p(max(0, t.get("score", 0)))
         att = t.get("attunement_score")
-        attunement_component = max(0.0, att) if att is not None else 0.5
-        weights.append(attunement_component + beta * score_component)
+        att_comp = max(0.0, att) if att is not None else 0.5
+
+        if weight_mode == "attunement_only":
+            weights.append(att_comp)
+        elif weight_mode == "additive":
+            score_comp = np.log1p(max(0, t.get("score", 0)))
+            weights.append(att_comp + beta * score_comp)
+        else:  # gate_amplify
+            if att_comp == 0.0:
+                weights.append(0.0)
+            else:
+                score_comp = np.log1p(max(0, t.get("score", 0)))
+                weights.append(att_comp * (1.0 + beta * score_comp))
     return weights
 
 
@@ -54,6 +77,7 @@ def load_sft_dataset(
     min_chain_depth: int = 3,
     min_total_score: float = 0.0,
     weight_beta: float = 0.3,
+    weight_mode: str = "gate_amplify",
 ) -> DatasetDict:
     """Load SFT chain parquet files into a HuggingFace DatasetDict.
 
@@ -65,6 +89,8 @@ def load_sft_dataset(
         min_total_score: Drop chains with total score below this.
         weight_beta:     Controls how much upvote score contributes to weight
                          vs attunement. Higher = more upvote influence.
+        weight_mode:     "gate_amplify" (default), "attunement_only", or "additive".
+                         See _compute_turn_weights for details.
     Returns:
         DatasetDict with "train" and "test" splits.
         Each row has: messages (list[dict]), turn_weights (list[float]).
@@ -80,7 +106,7 @@ def load_sft_dataset(
 
     rows = []
     for fpath in files:
-        rows.extend(_load_shard(fpath, weight_beta,
+        rows.extend(_load_shard(fpath, weight_beta, weight_mode,
                                 min_chain_depth, min_total_score))
 
     if not rows:
@@ -118,6 +144,7 @@ def load_sft_dataset(
 def _load_shard(
     path: str,
     weight_beta: float,
+    weight_mode: str,
     min_chain_depth: int,
     min_total_score: float,
 ) -> list[dict]:
@@ -138,7 +165,7 @@ def _load_shard(
 
         turns = json.loads(data["turns"][i])
         messages = [{"role": t["role"], "content": t["content"]} for t in turns]
-        turn_weights = _compute_turn_weights(turns, weight_beta)
+        turn_weights = _compute_turn_weights(turns, weight_beta, weight_mode)
 
         rows.append({
             "messages": messages,
@@ -158,4 +185,5 @@ def load_from_config(config: dict) -> DatasetDict:
         min_chain_depth=data_cfg.get("min_chain_depth", 3),
         min_total_score=data_cfg.get("min_total_score", 0.0),
         weight_beta=data_cfg.get("weight_beta", 0.3),
+        weight_mode=data_cfg.get("weight_mode", "gate_amplify"),
     )

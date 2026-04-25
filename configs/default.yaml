@@ -16,12 +16,13 @@ model_presets:
     name: "meta-llama/Llama-3.1-8B-Instruct"
 
 data:
-  sft_chain_dir: "./data/sft_chains_upload"
+  sft_chain_dir: "./data"
   test_split: 0.05
   seed: 42
   min_chain_depth: 3
   min_total_score: 0.0
   weight_beta: 0.3         # upvote score influence on weight (vs attunement)
+  weight_mode: "gate_amplify"  # gate_amplify | attunement_only | additive
 
 # QLoRA config (used only when full_finetune=false)
 qlora:
@@ -80,12 +81,12 @@ training:
   learning_rate: 2.0e-5
   warmup_ratio: 0.05
   weight_decay: 0.01
-  lr_scheduler_type: "cosine"
+  lr_scheduler_type: "cosine_with_restarts"
   logging_steps: 10
   save_steps: 2000
   eval_steps: 2000
   eval_strategy: "steps"
-  save_total_limit: 1
+  save_total_limit: 2
   report_to: "wandb"
   run_name: "qwen2.5-7b-weighted-sft"
   max_length: 2048
