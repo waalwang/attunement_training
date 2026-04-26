@@ -74,6 +74,21 @@ profiles:
     gradient_checkpointing: true
     max_length: 2048
 
+# QLoRA config for DPO (larger rank for preference learning)
+dpo_qlora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  task_type: "CAUSAL_LM"
+
 # DPO training
 dpo:
   data_dir: "./data/dpo_unweighted_sft_final.parquet"

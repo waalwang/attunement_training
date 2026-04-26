@@ -72,7 +72,7 @@ def build_quantization_config(cfg: dict) -> BitsAndBytesConfig:
 
 
 def build_lora_config(cfg: dict) -> LoraConfig:
-    qlora = cfg["qlora"]
+    qlora = cfg.get("dpo_qlora", cfg["qlora"])
     return LoraConfig(
         r=qlora["r"],
         lora_alpha=qlora["lora_alpha"],
