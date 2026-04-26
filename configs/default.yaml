@@ -54,8 +54,8 @@ profiles:
 
   cloud:
     # QLoRA on 7B, RTX PRO 6000 WS 96GB
-    per_device_train_batch_size: 8
-    gradient_accumulation_steps: 2
+    per_device_train_batch_size: 6
+    gradient_accumulation_steps: 3
     bf16: true
     fp16: false
     full_finetune: false
@@ -91,13 +91,16 @@ dpo_qlora:
 
 # DPO training
 dpo:
-  data_dir: "./data/dpo_unweighted_sft_final.parquet"
+  data_dir: "./data/dpo_chains_upload/dpo_unweighted_sft_final_fixed.parquet"
   beta: 0.1
-  loss_type: "sigmoid"            # sigmoid | ipo | hinge
+  loss_type: ["sigmoid", "sft"]   # combine DPO + NLL on chosen to anchor rewards
+  loss_weights: [1.0, 0.1]        # sft_weight=0.1; tune up if chosen reward still drifts negative
   output_dir: "outputs/dpo"
   learning_rate: 5.0e-6
   num_train_epochs: 1
   max_prompt_length: 1024
+  save_steps: 1000
+  eval_steps: 1000
   min_score_delta: 0.0
   precompute_ref_log_probs: false  # auto-enabled for full FT
   chosen_weighting: false          # per-example weighting from chosen quality
@@ -117,7 +120,7 @@ training:
   save_steps: 2000
   eval_steps: 2000
   eval_strategy: "steps"
-  save_total_limit: 2
+  save_total_limit: 3
   report_to: "wandb"
   run_name: "qwen2.5-7b-weighted-sft"
   max_length: 2048

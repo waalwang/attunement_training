@@ -47,7 +47,7 @@ def load_config(config_path: str, profile: str, model_override: str | None = Non
     cfg["_profile"] = profile
 
     dpo = cfg.get("dpo", {})
-    for key in ("output_dir", "learning_rate", "num_train_epochs", "run_name"):
+    for key in ("output_dir", "learning_rate", "num_train_epochs", "run_name", "save_steps", "eval_steps"):
         if key in dpo:
             cfg["training"][key] = dpo[key]
 
@@ -122,7 +122,8 @@ def build_dpo_args(cfg: dict) -> DPOConfig:
         seed=cfg["data"].get("seed", 42),
         remove_unused_columns=False,
         beta=dpo.get("beta", 0.1),
-        loss_type=dpo.get("loss_type", "sigmoid"),
+        loss_type=dpo.get("loss_type", ["sigmoid"]),
+        loss_weights=dpo.get("loss_weights"),
         precompute_ref_log_probs=precompute,
     )
 
@@ -225,9 +226,10 @@ def main():
     )
 
     logger.info(
-        "Starting DPO training (beta=%.2f, loss=%s, chosen_weighting=%s)...",
+        "Starting DPO training (beta=%.2f, loss=%s, weights=%s, chosen_weighting=%s)...",
         dpo.get("beta", 0.1),
-        dpo.get("loss_type", "sigmoid"),
+        dpo.get("loss_type", ["sigmoid"]),
+        dpo.get("loss_weights"),
         dpo.get("chosen_weighting", False),
     )
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)

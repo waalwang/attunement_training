@@ -25,16 +25,24 @@ class WeightedDPOTrainer(DPOTrainer):
     def __init__(self, chosen_weighting: bool = False, **kwargs):
         super().__init__(**kwargs)
         self.chosen_weighting = chosen_weighting
-        self._batch_chosen_weights = None
 
-    def get_batch_loss_metrics(self, model, batch, train_eval="train"):
-        self._batch_chosen_weights = batch.pop("chosen_weight", None)
-        loss, metrics = super().get_batch_loss_metrics(model, batch, train_eval)
+    def _compute_loss(self, model, inputs, return_outputs):
+        if self.chosen_weighting:
+            w = inputs.pop("chosen_weight", None)
+        else:
+            inputs.pop("chosen_weight", None)
+            w = None
 
-        if not self.chosen_weighting or self._batch_chosen_weights is None:
-            return loss, metrics
+        result = super()._compute_loss(model, inputs, return_outputs)
 
-        w = self._batch_chosen_weights.to(loss.device, dtype=loss.dtype)
+        if w is None:
+            return result
+
+        loss = result[0] if return_outputs else result
+        w = w.to(loss.device, dtype=loss.dtype)
         loss = loss * w.mean()
-        metrics[f"{train_eval}_chosen_weight_mean"] = w.mean().item()
-        return loss, metrics
+
+        mode = "train" if self.model.training else "eval"
+        self._metrics[mode]["chosen_weight_mean"].append(w.mean().item())
+
+        return (loss, result[1]) if return_outputs else loss
