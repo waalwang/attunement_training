@@ -10,3 +10,4 @@ numpy>=1.24
 tqdm
 pyyaml
 wandb
+vllm>=0.4
