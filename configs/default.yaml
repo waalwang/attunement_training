@@ -74,6 +74,22 @@ profiles:
     gradient_checkpointing: true
     max_length: 2048
 
+# DPO training
+dpo:
+  data_dir: "./data/dpo_unweighted_sft_final.parquet"
+  beta: 0.1
+  loss_type: "sigmoid"            # sigmoid | ipo | hinge
+  output_dir: "outputs/dpo"
+  learning_rate: 5.0e-6
+  num_train_epochs: 1
+  max_prompt_length: 1024
+  min_score_delta: 0.0
+  precompute_ref_log_probs: false  # auto-enabled for full FT
+  chosen_weighting: false          # per-example weighting from chosen quality
+  weight_beta: 0.3
+  weight_mode: "gate_amplify"
+  run_name: "qwen2.5-7b-dpo"
+
 # Weighted SFT training
 training:
   output_dir: "outputs/sft"
