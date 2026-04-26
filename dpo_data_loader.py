@@ -4,9 +4,13 @@ dpo_data_loader.py
 Loads DPO pair parquet files (from generate_dpo_rejected.py) and converts
 them into the format expected by TRL's DPOTrainer.
 
-DPOTrainer expects each row to have:
-  - chosen: list of {"role": ..., "content": ...}
-  - rejected: list of {"role": ..., "content": ...}
+DPOTrainer (TRL >= 1.0) expects each row to have:
+  - prompt: list of {"role": ..., "content": ...}  (shared prefix)
+  - chosen: list of {"role": ..., "content": ...}  (diverging chosen branch)
+  - rejected: list of {"role": ..., "content": ...} (diverging rejected branch)
+
+Supplying prompt explicitly avoids TRL's extract_prompt pass and the
+tokenization prefix mismatch warning from add_generation_prompt=True.
 
 Optionally computes a per-example chosen_weight for weighted DPO,
 derived from attunement/upvote scores on the chosen branch.
@@ -109,12 +113,10 @@ def _load_shard(
         chosen_branch = json.loads(data["chosen_branch"][i])
         rejected_branch = json.loads(data["rejected_branch"][i])
 
-        chosen_msgs = _strip_messages(fork) + _strip_messages(chosen_branch)
-        rejected_msgs = _strip_messages(fork) + _strip_messages(rejected_branch)
-
         row = {
-            "chosen": chosen_msgs,
-            "rejected": rejected_msgs,
+            "prompt": _strip_messages(fork),
+            "chosen": _strip_messages(chosen_branch),
+            "rejected": _strip_messages(rejected_branch),
         }
 
         if chosen_weighting:
