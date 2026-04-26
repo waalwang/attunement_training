@@ -117,7 +117,7 @@ def build_dpo_args(cfg: dict) -> DPOConfig:
         report_to=t.get("report_to", "none"),
         run_name=t.get("run_name"),
         max_length=t["max_length"],
-        max_prompt_length=dpo.get("max_prompt_length", t["max_length"] // 2),
+        # max_prompt_length=dpo.get("max_prompt_length", t["max_length"] // 2),
         dataset_num_proc=t.get("dataset_num_proc"),
         seed=cfg["data"].get("seed", 42),
         remove_unused_columns=False,
