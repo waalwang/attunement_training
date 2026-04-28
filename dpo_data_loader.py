@@ -49,6 +49,7 @@ def load_dpo_dataset(
     chosen_weighting: bool = False,
     weight_beta: float = 0.3,
     weight_mode: str = "gate_amplify",
+    length_matched_only: bool = True,
 ) -> DatasetDict:
     if os.path.isfile(data_dir):
         files = [data_dir]
@@ -63,6 +64,7 @@ def load_dpo_dataset(
     for fpath in files:
         rows.extend(_load_shard(
             fpath, min_score_delta, chosen_weighting, weight_beta, weight_mode,
+            length_matched_only,
         ))
 
     if not rows:
@@ -97,6 +99,7 @@ def _load_shard(
     chosen_weighting: bool,
     weight_beta: float,
     weight_mode: str,
+    length_matched_only: bool = True,
 ) -> list[dict]:
     import pyarrow.parquet as pq
 
@@ -107,6 +110,8 @@ def _load_shard(
     rows = []
     for i in range(n):
         if data["score_delta"][i] < min_score_delta:
+            continue
+        if length_matched_only and not data.get("length_matched", [True] * n)[i]:
             continue
 
         fork = json.loads(data["fork"][i])
@@ -140,4 +145,5 @@ def load_dpo_from_config(config: dict) -> DatasetDict:
         chosen_weighting=dpo_cfg.get("chosen_weighting", False),
         weight_beta=dpo_cfg.get("weight_beta", 0.3),
         weight_mode=dpo_cfg.get("weight_mode", "gate_amplify"),
+        length_matched_only=dpo_cfg.get("length_matched_only", True),
     )

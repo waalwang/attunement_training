@@ -200,8 +200,32 @@ def print_stats(rows):
     print_synthesis_stats(rows)
 
     # Length matched
-    matched = sum(1 for r in rows if r.get("length_matched", False))
+    matched = sum(1 for r in rows if r.get("length_matched", True))
     print(f"\nLength matched: {matched:,}/{n:,} ({100*matched/n:.1f}%)")
+
+    # Length balance for length_matched rows only
+    matched_rows = [r for r in rows if r.get("length_matched", True)]
+    if matched_rows:
+        m = len(matched_rows)
+        m_chosen = np.array([r["chosen_chars"] for r in matched_rows])
+        m_rejected = np.array([r["rejected_chars"] for r in matched_rows])
+        m_denom = np.maximum(m_chosen, m_rejected).astype(float)
+        m_denom = np.where(m_denom == 0, 1, m_denom)
+        m_abs_ratio = np.abs(m_chosen - m_rejected) / m_denom
+        m_signed_ratio = (m_chosen - m_rejected) / m_denom
+
+        print(f"\nLength balance (length_matched only, n={m:,}):")
+        print(f"  |cho - rej| / max(cho, rej):")
+        print(f"  mean={m_abs_ratio.mean():.3f} median={np.median(m_abs_ratio):.3f} "
+              f"p90={np.percentile(m_abs_ratio, 90):.3f}")
+        for t in (0.10, 0.20, 0.30, 0.50):
+            cnt = (m_abs_ratio <= t).sum()
+            print(f"  <= {t:.2f}: {cnt:,} ({100*cnt/m:.1f}%)")
+
+        rej_longer = (m_signed_ratio < 0).sum()
+        cho_longer = (m_signed_ratio > 0).sum()
+        print(f"  rejected longer: {rej_longer:,} ({100*rej_longer/m:.1f}%)")
+        print(f"  chosen longer:   {cho_longer:,} ({100*cho_longer/m:.1f}%)")
 
 
 def print_synthesis_stats(rows):

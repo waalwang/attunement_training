@@ -47,6 +47,15 @@ USER_GEN_SYSTEM = (
 )
 
 
+def _truncate_at_boundary(text: str, target_chars: int) -> str:
+    if len(text) <= target_chars:
+        return text
+    for i in range(target_chars, max(target_chars // 2, 0), -1):
+        if text[i] in '.!?\n':
+            return text[:i + 1]
+    return text[:target_chars]
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Generate synthetic rejected turns")
     p.add_argument("--input-dir", required=True,
@@ -122,17 +131,20 @@ def _collect_asst_requests(
             ]
             prompt = _build_prompt(tokenizer, context, "assistant")
             target_chars = len(turn["content"])
+            min_tokens = max(1, int(target_chars * 0.7 / 4))
             requests.append({
                 "pair_idx": pair_idx,
                 "turn_idx": turn_idx,
                 "prompt": prompt,
-                "max_new_tokens": max(32, int(target_chars / 3)),
+                "max_new_tokens": max(32, int(target_chars * 1.3 / 3)),
+                "min_tokens": min_tokens,
+                "target_chars": target_chars,
                 "role": "assistant",
             })
     return requests
 
 
-def _collect_user_requests(
+def _collect_length_match_requests(
     pairs: list[dict],
     tokenizer,
     length_tolerance: float,
@@ -145,34 +157,45 @@ def _collect_user_requests(
 
         rejected_chars = sum(len(t["content"]) for t in rejected)
         denom = max(chosen_chars, rejected_chars, 1)
-        if (chosen_chars - rejected_chars) / denom <= length_tolerance:
+        if abs(chosen_chars - rejected_chars) / denom <= length_tolerance:
             continue
 
+        # positive = expand rejected, negative = shrink rejected
         diff = chosen_chars - rejected_chars
-        user_indices = [i for i, t in enumerate(rejected) if t["role"] == "user"]
-        if not user_indices:
+        adjustable = [
+            i for i, t in enumerate(rejected)
+            if t["role"] == "user" or t.get("synthetic", False)
+        ]
+        if not adjustable:
             continue
 
-        for idx in user_indices:
+        per_turn_extra = diff // len(adjustable)
+
+        for idx in adjustable:
             cur_rej = sum(len(t["content"]) for t in rejected)
             cur_denom = max(chosen_chars, cur_rej, 1)
-            if (chosen_chars - cur_rej) / cur_denom <= length_tolerance:
+            if abs(chosen_chars - cur_rej) / cur_denom <= length_tolerance:
                 break
 
-            per_turn_target = len(rejected[idx]["content"]) + diff // max(len(user_indices), 1)
+            per_turn_target = len(rejected[idx]["content"]) + per_turn_extra
             per_turn_target = max(20, per_turn_target)
+            role = rejected[idx]["role"]
 
             context = fork + [
                 {"role": t["role"], "content": t["content"]}
                 for t in rejected[:idx]
             ]
-            prompt = _build_prompt(tokenizer, context, "user")
+            prompt = _build_prompt(tokenizer, context, role)
+            min_tokens = max(1, int(per_turn_target * 0.7 / 4))
+
             requests.append({
                 "pair_idx": pair_idx,
                 "turn_idx": idx,
                 "prompt": prompt,
-                "max_new_tokens": max(32, int(per_turn_target / 3)),
-                "role": "user",
+                "max_new_tokens": max(32, int(per_turn_target * 1.3 / 3)),
+                "min_tokens": min_tokens,
+                "target_chars": per_turn_target,
+                "role": role,
             })
     return requests
 
@@ -185,28 +208,32 @@ def _batch_generate(llm, requests, temperature, top_p):
 
     grouped = {}
     for req in requests:
-        key = req["max_new_tokens"]
+        key = (req.get("min_tokens", 0), req["max_new_tokens"])
         grouped.setdefault(key, []).append(req)
 
     results = {}
     total_done = 0
-    for max_tokens, group in sorted(grouped.items()):
+    for (min_tok, max_tok), group in sorted(grouped.items()):
         params = SamplingParams(
             temperature=temperature,
             top_p=top_p,
-            max_tokens=max_tokens,
+            min_tokens=min_tok,
+            max_tokens=max_tok,
         )
         prompts = [r["prompt"] for r in group]
         outputs = llm.generate(prompts, params)
 
         for req, out in zip(group, outputs):
             text = out.outputs[0].text.strip()
+            target = req.get("target_chars")
+            if target and len(text) > int(target * 1.3):
+                text = _truncate_at_boundary(text, target)
             results[(req["pair_idx"], req["turn_idx"])] = text
 
         total_done += len(group)
         logger.info(
-            "Generated %d/%d (max_tokens=%d, batch=%d)",
-            total_done, len(requests), max_tokens, len(group),
+            "Generated %d/%d (min_tokens=%d, max_tokens=%d, batch=%d)",
+            total_done, len(requests), min_tok, max_tok, len(group),
         )
 
     return results
@@ -252,13 +279,6 @@ def main():
             "score_delta": data["score_delta"][i],
         }
 
-        # Drop if rejected is too long
-        max_chars = max(chosen_chars, rejected_chars)
-        if max_chars > 0 and rejected_chars > chosen_chars:
-            excess = (rejected_chars - chosen_chars) / max_chars
-            if excess > args.length_tolerance:
-                continue
-
         if skip_matched:
             denom = max(chosen_chars, rejected_chars, 1)
             length_ok = abs(chosen_chars - rejected_chars) / denom <= args.length_tolerance
@@ -289,9 +309,8 @@ def main():
         })
 
     logger.info(
-        "Phase 1 done in %.1fs: %d skipped, %d need generation, %d dropped (rejected too long)",
+        "Phase 1 done in %.1fs: %d skipped, %d need generation",
         time.time() - t0, len(skipped_results), len(pairs_to_process),
-        n - len(skipped_results) - len(pairs_to_process),
     )
 
     if not pairs_to_process:
@@ -347,14 +366,14 @@ def main():
             time.time() - t_asst, len(asst_results),
         )
 
-        # Phase 3: collect and batch user turn expansion requests
-        logger.info("Phase 3: user turn expansion for length matching...")
+        # Phase 3: expand or shrink all available slots for length matching
+        logger.info("Phase 3: length matching (expand/shrink user + synthetic asst)...")
         t_user = time.time()
 
-        user_requests = _collect_user_requests(
+        user_requests = _collect_length_match_requests(
             pairs_to_process, tokenizer, args.length_tolerance
         )
-        logger.info("Collected %d user expansion requests", len(user_requests))
+        logger.info("Collected %d length-match requests", len(user_requests))
 
         user_results = _batch_generate(
             llm, user_requests, args.temperature, args.top_p
