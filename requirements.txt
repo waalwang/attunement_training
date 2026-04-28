@@ -11,3 +11,5 @@ tqdm
 pyyaml
 wandb
 vllm>=0.4
+mauve_text>=0.4.0
+sacrebleu>=2.6.0

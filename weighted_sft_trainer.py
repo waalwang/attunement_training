@@ -7,6 +7,10 @@ one per conversation turn. Assistant turn weights scale token-level loss;
 user/system turns have weight 0 (already masked by labels=-100).
 
 Falls back to plain unweighted SFT when turn_weights is absent.
+
+NOTE: TRL's DataCollatorForLanguageModeling only forwards standard columns
+(input_ids, labels, attention_mask, etc.) and silently drops turn_weights.
+We wrap the collator to preserve turn_weights through to compute_loss.
 """
 
 from __future__ import annotations
@@ -14,12 +18,27 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from typing import Any
 
 import torch
 from transformers.trainer_utils import sort_checkpoints
 from trl import SFTTrainer
 
 logger = logging.getLogger(__name__)
+
+
+class _WeightedCollatorWrapper:
+    """Wraps TRL's data collator to preserve turn_weights in the batch."""
+
+    def __init__(self, inner_collator):
+        self.inner = inner_collator
+
+    def __call__(self, features: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
+        turn_weights = [f.pop("turn_weights", None) for f in features]
+        batch = self.inner(features, **kwargs)
+        if any(tw is not None for tw in turn_weights):
+            batch["turn_weights"] = turn_weights
+        return batch
 
 
 def _build_token_weights(labels: torch.Tensor, turn_weights: list[list[float]]) -> torch.Tensor:
@@ -58,6 +77,7 @@ class WeightedSFTTrainer(SFTTrainer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.data_collator = _WeightedCollatorWrapper(self.data_collator)
         self._acc_correct = 0
         self._acc_total = 0
 

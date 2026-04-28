@@ -16,7 +16,7 @@ model_presets:
     name: "meta-llama/Llama-3.1-8B-Instruct"
 
 data:
-  sft_chain_dir: "./data"
+  sft_chain_dir: "./data/sft_chains_scored.parquet"
   test_split: 0.05
   seed: 42
   min_chain_depth: 3
