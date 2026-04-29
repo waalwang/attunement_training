@@ -52,6 +52,17 @@ class SyncStateStepsCallback(TrainerCallback):
         state.compute_steps(args, state.max_steps)
 
 
+class DeleteOptimizerCallback(TrainerCallback):
+    def on_save(self, args, state, control, **kwargs):
+        if state.global_step >= state.max_steps:
+            return
+        ckpt = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        opt = os.path.join(ckpt, "optimizer.pt")
+        if os.path.exists(opt):
+            os.remove(opt)
+            logger.info("Deleted %s", opt)
+
+
 def load_config(config_path: str, profile: str, model_override: str | None = None) -> dict:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -234,7 +245,7 @@ def main():
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-        callbacks=[SyncStateStepsCallback()],
+        callbacks=[SyncStateStepsCallback(), DeleteOptimizerCallback()],
     )
 
     logger.info("Starting weighted SFT training...")
