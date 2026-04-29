@@ -37,7 +37,7 @@ from transformers import (
 )
 from trl import SFTConfig
 
-from data_loader import load_from_config
+from data_loader import load_from_config_v2 as load_from_config
 from weighted_sft_trainer import WeightedSFTTrainer
 
 logging.basicConfig(

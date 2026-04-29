@@ -23,6 +23,8 @@ data:
   min_total_score: 0.0
   weight_beta: 0.3         # upvote score influence on weight (vs attunement)
   weight_mode: "gate_amplify"  # gate_amplify | attunement_only | additive
+  weight_floor: 0.1           # min weight for assistant turns (v2)
+  weight_max: 2.0             # cap on normalized weights (v2)
 
 # QLoRA config (used only when full_finetune=false)
 qlora:
