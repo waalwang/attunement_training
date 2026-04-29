@@ -28,7 +28,7 @@ from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_tr
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import DPOConfig
 
-from dpo_data_loader import load_dpo_from_config
+from dpo_data_loader import load_dpo_from_config_v2 as load_dpo_from_config
 from weighted_dpo_trainer import WeightedDPOTrainer
 
 logging.basicConfig(
